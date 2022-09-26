@@ -24,6 +24,7 @@ app.use(bodyParser.urlencoded({limit: '10mb', extended: true}))
 
 
 app.use(express.static(__dirname + '/public'));
+//app.use(express.static(__dirname));
 var router = require('./routes/index')
 app.use('/', router);
 

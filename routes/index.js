@@ -1,12 +1,23 @@
 var express = require('express');
 var axios = require('axios');
-var fs = require('fs');
-var path = require('path')
+var fs = require('fs');//获取文件系统工具，负责读写文件
+var path = require('path')//工具模块，处理文件路径的小工具
 var jwt = require('jsonwebtoken')
 var formidable = require('formidable')
 var router = express.Router()
 var dayjs = require('dayjs')
 var db = require("../db/db")
+// 导入DocxTemplater
+var PizZip = require('pizzip')
+var Docxtemplater = require('docxtemplater');
+// 使用JSZIP打包文件夹
+var JSZIP = require("jszip");
+var zip = new JSZIP();
+
+
+const { finished } = require('stream');
+const compression = require('compression');
+
 
 var root = path.resolve(__dirname,'../')
 var clone =(e)=> {
@@ -120,6 +131,111 @@ router.post('/impSCLS',async (req,res,next)=>{
   res.status(200).json({code:200,data:r});
 })
 
+// 读取目录及文件
+function  readDir(obj,Path){
+   let files = fs.readdirSync(Path);//读取目录中的所有文件及文件夹（同步操作）
+   files.forEach(fileName =>{
+    let  fillPath = Path + "/" +fileName;
+    let  file = fs.statSync(fillPath);// 获取文件信息状态
+    if(file.isDirectory()){//如果是目录的话继续查询
+      let  dirZip = zip.folder(fileName);//压缩对象中生成该目录
+      readDir(dirZip,fillPath);//重新检索目录文件
+    }else{
+      obj.file(fileName,fs.readFileSync(fillPath));//压缩目录添加文件
+    }
+   })
+}
+// 生成一个压缩包
+function startZip(){
+  const sourceDir = path.join(__dirname,"../export"); // path.join就是把每个路径进行拼接
+  readDir(zip,sourceDir);
+  zip.generateAsync({//设置压缩格式，开始打包
+      type:"nodebuffer",//nodejs用
+      compression:"DEFLATE",//压缩算法
+      compressionOptions:{//压缩级别
+          level:9
+      }
+  }).then((content)=>{
+    const dest = path.join(__dirname,"../public");
+    fs.mkdirSync(dest,{
+      recursive:true
+    })
+    fs.writeFileSync(path.resolve(dest,'hznu.zip'),content);
+  });
+
+}
+// 导出为docx
+router.get('/export',async(req,res)=>{
+
+  let sql1 = `CALL PROC_EXPORT_UID()`
+  let sql2 = `CALL PROC_EXPORT_EXP()`
+  let sql3 = `CALL PROC_EXPORT_TECH()`
+  let sql4 = `CALL PROC_EXPORT_CLS()`
+  let r = await callP(sql1,null,res)
+  let s = await callP(sql2,null,res)
+  let t = await callP(sql3,null,res)
+  let p = await callP(sql4,null,res)
+  // 将docx文件作为二进制内容加载
+  for(let i = 0;i<r.length;i++){
+
+    let content = fs.readFileSync(path.resolve(__dirname,'../public/hznu.docx'),'binary');
+    let zip = new PizZip(content);
+    let doc = new Docxtemplater(zip);
+    //try { doc = new Docxtemplater(zip) } catch(error){errorHandler(error);}
+    let data1 = r[i];
+    // 实验进度
+    let data2 = s.filter((item,index,arr)=>{
+      return item.uid == data1.uid && (item.code.includes(`${data1.code}`));
+    });
+    // 教学进度
+    let data3 = t.filter((item,index,arr)=>{
+      return item.uid == data1.uid && (item.code.includes(`${data1.code}`));
+    });
+    // 基本信息
+    let data4 = p.filter((item,index,arr)=>{
+      return item.uid == data1.uid && item.code == data1.code;
+    })
+    let w_hour = parseInt(data4[0].t_hour) + parseInt(data4[0].e_hour);
+    let a_hour = w_hour*16;
+    doc.setData();
+    try{ doc.render({
+      clsterm:`${data4[0].term}`,
+      name:`${data4[0].name}`,
+      clspos:`${data4[0].pos}`,
+      clscol:`${data4[0].col}`,
+      clsmark:`${data4[0].mark}`,
+      clsweek:`${data4[0].week}`,
+      clse_hour:`${data4[0].e_hour}`,
+      clst_hour:`${data4[0].t_hour}`,
+      clsm_tech:`${data4[0].m_tech}`,
+      clss_tach:`${data4[0].s_tach}`,
+      clsq_time:`${data4[0].q_time}`,
+      clsq_addr:`${data4[0].q_addr}`,
+      w_hour:`${w_hour}`,
+      a_hour:`${a_hour}`,
+      cls:data4,
+      tecList:data3,
+      expList:data2,
+      desc:`${data4[0].desc}`,
+      mate:`${data4[0].mate}`,
+      exam:`${data4[0].exam}`,
+      method:`${data4[0].method}`,
+    }
+    )} catch (error) { errorHandler(error);}
+    var buf = doc.getZip().generate({
+      type: 'nodebuffer',
+      compression: "DEFLATE",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    fs.writeFileSync(path.resolve(__dirname,`../export/${data4[0].uname}${data4[0].name}.docx`),buf);
+    
+  }
+  startZip();
+  console.log(`finished....`);
+  res.status(200).json({code:200,data:'http://124.220.20.66:8000/hznu.zip',msg:"finished"});
+  
+});
+
 // 上传文件
 router.post('/upload', function (req, res) {
   const form = formidable({uploadDir: `${__dirname}/../img`});
@@ -138,7 +254,8 @@ router.post('/upload', function (req, res) {
       msg: '上传照片成功',
       data: {path: files.file.filepath}
     })
-  });
-})
+    
+  })
+});
 
 module.exports = router
